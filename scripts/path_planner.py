@@ -1,6 +1,7 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
-import rospy
+import rclpy
+from rclpy.node import Node
 import os
 import sys
 import math
@@ -11,12 +12,11 @@ from tsp_solver.greedy import solve_tsp
 from collections import defaultdict
 import time
 
-from std_msgs.msg import Float64MultiArray, Int32, Int32MultiArray, Int16
+from std_msgs.msg import Float64MultiArray, Int32, Int16
+from geometry_msgs.msg import Point
 
-from cpp_solver.srv import TspPathList, TspPathListResponse, TspPathListRequest, \
-    RequestGraph, RequestGraphResponse, RequestGraphRequest, ReliableLoop, ReliableLoopRequest, ReliableLoopResponse
+from cpp_solver.srv import TspPathList, RequestGraph, ReliableLoop
 from cpp_solver.msg import PoseGraph, EdgeDistance
-
 
 # Add python path to header file
 path = os.path.abspath(".")
@@ -33,36 +33,66 @@ from offline_tsp_evaluation import connect_tsp_path, offline_evaluate_tsp_path, 
 
 from read_drawio_to_nx import build_prior_map_from_drawio
 
-
-
-class PathPlanner:
+class PathPlannerNode(Node):
     def __init__(self):
-        """ Get intial pose of the robot w.r.t the environment center.
-            Step 1: assume the robot pose is [x_r, y_r, z_r, 0] according to .world file in Stage simulator, and 
-            floor plan position is [0, 0, 0, 0].
-            Step 2: build a prior_graph of the environment with its origin being the center of the environment.
-            Step 3: transform all vertices positions of prior_graph from (x_v, y_v, z_v) to (x_v - x_r, y_v - y_r, z_v - z_r).
-            Step 4: tsp planning should start from the closest vertex to the robot.
-        """
-        rospy.init_node('path_planner')
+        super().__init__('path_planner')
 
-        robot_position_str = rospy.get_param('/path_planner/robot_position')
+        # Initialize your variables here
+        self.prior_graph = nx.Graph()
+        self.curr_path = []
+        self.is_loop = []
+        self.robot_position = []
+        self.xml_path = ''
+        self.map_width = -1
+        self.use_drawio = False
+        self.only_use_tsp = False
+        self.tsp_solver_name = "tsp-solver"
+        self.need_noise = False
+        self.variance = 0.0
+        self.full_tsp_path = []
+        self.curr_obj_value = 0.0
+        self.curr_d_opt = 0.0
+        self.curr_path_dist = 0.0
+        self.tsp_d_opt = 0.0
+        self.tsp_dist = 0.0
+        self.pose_graph = nx.Graph()
+        self.curr_pg_vertex_idx = 0
+        self.curr_pg_edge_idx = 0
+        self.g2o_save_path = ''
+        self.visited_vertices = []
+        self.vertices_to_poses = defaultdict(list)
+        self.use_find_last_loop = False
+
+        # Declare parameters
+        self.declare_parameter('robot_position', '')
+        self.declare_parameter('xml_path', '')
+        self.declare_parameter('map_width', -1)
+        self.declare_parameter('use_drawio', False)
+        self.declare_parameter('only_use_tsp', False)
+        self.declare_parameter('tsp_solver', "tsp-solver")
+        self.declare_parameter('need_noise', False)
+        self.declare_parameter('variance', 0.0)
+        self.declare_parameter('g2o_save_path', '')
+
+        # Get parameters
+        robot_position_str = self.get_parameter('robot_position').get_parameter_value().string_value
         pose_list = robot_position_str.split(" ")
         self.robot_position = [float(x) for x in pose_list]
         if len(self.robot_position) < 3:
-            rospy.logerr("robot initial position less than 3 parameters.")
+            self.get_logger().error("robot initial position less than 3 parameters.")
 
-        self.xml_path = rospy.get_param('/path_planner/xml_path', '')
-        self.map_width = rospy.get_param('/path_planner/map_width', -1)
-        self.use_drawio = rospy.get_param('/path_planner/use_drawio', False)
-        self.only_use_tsp = rospy.get_param('/path_planner/only_use_tsp', False)
-        self.tsp_solver_name = rospy.get_param('/path_planner/tsp_solver', "tsp-solver")  # Or "concorde"
-        self.need_noise = rospy.get_param('/path_planner/need_noise', False)
-        self.variance = rospy.get_param('/path_planner/variance', 0)
+        self.xml_path = self.get_parameter('xml_path').get_parameter_value().string_value
+        self.map_width = self.get_parameter('map_width').get_parameter_value().integer_value
+        self.use_drawio = self.get_parameter('use_drawio').get_parameter_value().bool_value
+        self.only_use_tsp = self.get_parameter('only_use_tsp').get_parameter_value().bool_value
+        self.tsp_solver_name = self.get_parameter('tsp_solver').get_parameter_value().string_value
+        self.need_noise = self.get_parameter('need_noise').get_parameter_value().bool_value
+        self.variance = self.get_parameter('variance').get_parameter_value().double_value
+        self.g2o_save_path = self.get_parameter('g2o_save_path').get_parameter_value().string_value
 
-        print(self.xml_path)
-        print(self.map_width)
-        print(self.use_drawio)
+        self.get_logger().info(f'xml_path: {self.xml_path}')
+        self.get_logger().info(f'map_width: {self.map_width}')
+        self.get_logger().info(f'use_drawio: {self.use_drawio}')
 
         #******************* Prior Map Construction ******************#
         if self.use_drawio:
@@ -70,51 +100,44 @@ class PathPlanner:
         else:
             self.prior_graph = self.build_prior_graph()
         self.align_prior_map_with_robot()
-        rospy.loginfo('Build prior map.')
+        self.get_logger().info('Build prior map.')
 
         # Make prior map a complete graph
         # self.make_priormap_complete()
 
         self.update_prior_graph_attributes()
 
-        # Change this paht to your folder
+        # Change this path to your folder
         save_data(self.prior_graph, "/home/ruofei/code/cpp/catkin_cpp_ws/src/cpp_solver/scripts/prior_map.pickle")
 
         self.solve_tsp_path()
-        rospy.loginfo('Find initial tsp path.')
+        self.get_logger().info('Find initial tsp path.')
 
         self.modify_tsp_path()
-        rospy.loginfo('Find modified curr_path and loop index')
+        self.get_logger().info('Find modified curr_path and loop index')
 
-        plan_service = rospy.Service('path_plan_service', TspPathList, self.handle_replanning)
-        graph_service = rospy.Service('prior_graph_service', RequestGraph, self.handle_prior_graph)
-        loop_service = rospy.Service('reliable_loop_service', ReliableLoop, self.handle_reliable_loop)
-        
-        self.pose_graph = nx.Graph()
-        self.curr_pg_vertex_idx = 0
-        self.curr_pg_edge_idx = 0
-        self.pub_pose_idx = rospy.Publisher('pose_graph_idx', Int32MultiArray, queue_size=2)
-        self.g2o_save_path = rospy.get_param('/path_planner/g2o_save_path')
-        rospy.loginfo('g2o_save_path: {}'.format(self.g2o_save_path))
+        # Create services
+        self.tsp_service = self.create_service(TspPathList, 'path_plan_service', self.handle_replanning)
+        self.graph_service = self.create_service(RequestGraph, 'prior_graph_service', self.handle_prior_graph)
+        self.loop_service = self.create_service(ReliableLoop, 'reliable_loop_service', self.handle_reliable_loop)
 
-        rospy.Subscriber("slam_pose_graph", PoseGraph, self.handle_pose_graph)
-        rospy.Subscriber("/edge_distance", EdgeDistance, self.handle_edge_distance)
+        # Create publishers and subscribers as needed
+        self.pub_pose_idx = self.create_publisher(Float64MultiArray, 'pose_graph_idx', 2)
+        self.create_subscription(PoseGraph, "slam_pose_graph", self.handle_pose_graph, 10)
+        self.create_subscription(EdgeDistance, "/edge_distance", self.handle_edge_distance, 10)
 
-        ## Visited vertices in prior graph
-        self.visited_vertices = []
-        self.vertices_to_poses = defaultdict(list)
+        self.get_logger().info('g2o_save_path: {}'.format(self.g2o_save_path))
+        self.get_logger().info('Path planner node initialized')
 
-        self.use_find_last_loop = False  # Indicator of whether find_last_loop is used
-    
     def build_prior_graph_with_xml(self, need_normalize = False, need_noise=False, variance=0) -> nx.graph:
         """ Node attri:
                 name: int, start from 1
                 position: tuple(x, y)
             Edge attri:
-                weight: float 
+                weight: float
         """
         graph = build_prior_map_from_drawio(self.xml_path, actual_map_width=self.map_width, need_normalize=need_normalize, need_noise=need_noise, variance=variance)
-        rospy.loginfo(f"Build prior map with {len(graph.nodes())} vertices.")
+        self.get_logger().info(f"Build prior map with {len(graph.nodes())} vertices.")
         return graph
 
     def build_prior_graph(self) -> nx.graph:
@@ -122,7 +145,7 @@ class PathPlanner:
                 name: int, start from 1
                 position: tuple(x, y)
             Edge attri:
-                weight: float 
+                weight: float
                 information: numpy.array
                 d_opt: float
         """
@@ -159,13 +182,13 @@ class PathPlanner:
                                     + (graph.nodes[p]["position"][1] - graph.nodes[q]["position"][1]) ** 2)
                     graph.add_edge(p, q, weight = weight)
         return graph
-    
+
     def align_prior_map_with_robot(self):
         for node in self.prior_graph.nodes():
             x, y = self.prior_graph.nodes()[node]["position"]
             self.prior_graph.nodes()[node]["position"] = (x - self.robot_position[0], y - self.robot_position[1])
         return
-    
+
     def make_priormap_complete(self):
         all_length = dict(nx.all_pairs_dijkstra_path_length(self.prior_graph, cutoff=None, weight='weight'))
         for node1 in self.prior_graph.nodes():
@@ -174,7 +197,7 @@ class PathPlanner:
                     self.prior_graph.add_edge(node1, node2, weight=all_length[node1][node2])
         print(f"8 - 6: {self.prior_graph.edges()[(8, 6)]['weight']}, 8 - 7: {self.prior_graph.edges()[(8, 7)]['weight']}")
         print(f"8 - 3: {self.prior_graph.edges()[(8, 3)]['weight']}, 8 - 9: {self.prior_graph.edges()[(8, 9)]['weight']}")
-    
+
     def update_prior_graph_attributes(self):
         # Add attributes for path planning
         Cov = np.zeros((3, 3))
@@ -185,7 +208,7 @@ class PathPlanner:
         add_edge_information_matrix(self.prior_graph, Sigma)
         add_graph_weights_as_dopt(self.prior_graph, key="d_opt")
         return
-    
+
     def solve_tsp_path(self):
         """ Set self.tsp_path and self.full_tsp_path """
         ## Find intial TSP path
@@ -202,13 +225,13 @@ class PathPlanner:
             if dist < min_dist:
                 min_dist = dist
                 start_idx = i
-        rospy.logwarn(f"Robot Start At {tsp_node_list[start_idx]}")
+        self.get_logger().warn(f"Robot Start At {tsp_node_list[start_idx]}")
 
         # Method 1: tsp-solver
         if self.tsp_solver_name == "tsp-solver":
             idx_path = solve_tsp(D, endpoints = (start_idx, None))  # Given start and end points
             print("Tsp problem solved by tsp-solver.")
-            self.tsp_path = [tsp_node_list[i] for i in idx_path] 
+            self.tsp_path = [tsp_node_list[i] for i in idx_path]
         else: # Concorde Method
             # First construct node_list for concorde. The first node should be starring node.
             concorde_node_list = [tsp_node_list[start_idx]]   # Indicate start_idx for concorde tsp solver
@@ -220,10 +243,10 @@ class PathPlanner:
             time1 = time.time()
             new_tsp_path, new_tsp_distance = concorde_tsp_solver(distance_matrix, concorde_node_list)
             tsp_solve_time = time.time() - time1
-            rospy.logwarn(f"Tsp problem solved by Concorde. {tsp_solve_time}")
+            self.get_logger().warn(f"Tsp problem solved by Concorde. {tsp_solve_time}")
             self.tsp_path = new_tsp_path
 
-        # Here tsp_path does not include repeated visit to vertices, 
+        # Here tsp_path does not include repeated visit to vertices,
         # because the distance matrix is computed for all pairs of vertices
         self.full_tsp_path = connect_tsp_path(self.prior_graph, self.tsp_path)
         # self.full_tsp_path = self.tsp_path
@@ -255,24 +278,23 @@ class PathPlanner:
             self.is_loop = [False for i in range(len(self.tsp_path))]
         return
 
-    
-    def handle_replanning(self, request: TspPathListRequest) -> TspPathListResponse:
-        rospy.loginfo(f"Replanning request. curr_vertex_idx: {request.curr_vertex_idx}")
-        rospy.loginfo(f"                    covered_vertices: {request.covered_vertices}")
-        response = TspPathListResponse()
+    def handle_replanning(self, request, response):
+        """ Server for replanning request. """
+        self.get_logger().info(f"Replanning request. curr_vertex_idx: {request.curr_vertex_idx}")
+        self.get_logger().info(f"                    covered_vertices: {request.covered_vertices}")
 
         if self.only_use_tsp:
-            response.response = self.curr_path  
+            response.response = self.curr_path
             response.isLoop = self.is_loop
             return response
-        
+
         # Note that curr_vertex_idx has been visited, but planning start from curr_vertex_idx
         curr_robot_idx = request.curr_vertex_idx
         covered_vertices = set(request.covered_vertices)
 
         if not self.is_loop[curr_robot_idx]:
             # Update self.curr_path and self.is_loop inside this function
-            rospy.loginfo("Handle local replanning...")
+            self.get_logger().info("Handle local replanning...")
             self.handle_local_replanning(curr_robot_idx)
         elif curr_robot_idx != 0 and curr_robot_idx != len(self.curr_path) - 1:
             # FIXMED: May only have two vertices if curr_robot_idx is the last indices
@@ -280,11 +302,11 @@ class PathPlanner:
             pass
             # self.modify_existing_tsp_path(curr_robot_idx, covered_vertices)
 
-        response.response = self.curr_path 
+        response.response = self.curr_path
         response.isLoop = self.is_loop
 
-        # rospy.loginfo("Test after replanning!!")
-        rospy.loginfo(f"curr path length: {len(self.curr_path)}, is_loop length: {len(self.is_loop)}")
+        # self.get_logger().info("Test after replanning!!")
+        self.get_logger().info(f"curr path length: {len(self.curr_path)}, is_loop length: {len(self.is_loop)}")
 
         new_path_str = ""
         for i in range(len(self.curr_path)):
@@ -296,14 +318,14 @@ class PathPlanner:
             if i == curr_robot_idx:
                 new_path_str += " ---> "
 
-        rospy.loginfo("Send new plan: " + new_path_str)
+        self.get_logger().info("Send new plan: " + new_path_str)
         return response
-    
+
     def handle_local_replanning(self, curr_robot_idx):
         if curr_robot_idx >= len(self.curr_path):
             return
         if curr_robot_idx == len(self.curr_path) - 1:
-            rospy.loginfo("Handle find last loop...")
+            self.get_logger().info("Handle find last loop...")
             if self.use_find_last_loop:
                 return
             self.find_last_loop(curr_robot_idx)
@@ -319,17 +341,17 @@ class PathPlanner:
                 local_path.append(self.curr_path[start_idx])
                 added_vertices.add(self.curr_path[start_idx])
             start_idx += 1
-        if start_idx < len(self.curr_path):  
+        if start_idx < len(self.curr_path):
             # If loop closure vertex is also in the local path, do not replan
             if self.is_loop[start_idx] and self.curr_path[start_idx] in added_vertices:
                 return
             # Add target vertex
             local_path.append(self.curr_path[start_idx])
-        rospy.loginfo("Local path to replan: " + str(local_path))
+        self.get_logger().info("Local path to replan: " + str(local_path))
 
         if len(local_path) < 3:  # No need to replanning
             return
-        
+
         # Construct distance matrix
         distance_matrix = get_distance_matrix_for_new_tsp_solver(self.prior_graph,\
                                                                  node_list=local_path)
@@ -343,8 +365,8 @@ class PathPlanner:
                                                                 specify_end = specify_end)
         # Double check the start and end of new_local_path
         if new_local_path[0] != local_path[0] or (specify_end and new_local_path[-1] != local_path[-1]):
-            rospy.logerr("Local path replan get wrong start and end vertex! Specify_end: " + str(specify_end))
-            rospy.logerr("new_local_path: " + str(new_local_path))
+            self.get_logger().error("Local path replan get wrong start and end vertex! Specify_end: " + str(specify_end))
+            self.get_logger().error("new_local_path: " + str(new_local_path))
             print(distance_matrix)
             return
         if local_path == new_local_path:   # Local path does not change
@@ -365,12 +387,11 @@ class PathPlanner:
             if start_idx < len(self.is_loop):
                 last_loop_piece = self.is_loop[start_idx:]
             self.is_loop = first_loop_piece + new_loop_piece + last_loop_piece
-            rospy.logwarn("New local path obtained!")
+            self.get_logger().warn("New local path obtained!")
         return
-    
 
     def find_last_loop(self, curr_robot_idx):
-        """ Find potential loop closure for the last vertex. 
+        """ Find potential loop closure for the last vertex.
             Update self.curr_path and self.is_loop if closure exists.
         """
         really_visit_vertices = list(self.visited_vertices)
@@ -380,14 +401,13 @@ class PathPlanner:
         really_visit_vertices.append(self.curr_path[curr_robot_idx])
         prefix_path = connect_tsp_path(self.prior_graph, really_visit_vertices)
 
-        loop_edge = find_last_loop_closure(self.prior_graph, prefix_path, self.curr_obj_value) 
+        loop_edge = find_last_loop_closure(self.prior_graph, prefix_path, self.curr_obj_value)
         # [closure, curr]
         if loop_edge[0] >= 0 and loop_edge[1] >= 0:
             self.curr_path.append(loop_edge[0])
             self.is_loop.append(True)
         return
 
-    
     def update_curr_obj_value(self, curr_real_path):
         tsp_edges = set()
         for i in range(len(curr_real_path) - 1):
@@ -402,16 +422,16 @@ class PathPlanner:
             print("Error when count TSP path distance!")
             sys.exit(1)
 
-        rospy.loginfo(f"Update curr_obj_value: {self.curr_obj_value}  ---> {tsp_d_opt / tsp_dist} ")
+        self.get_logger().info(f"Update curr_obj_value: {self.curr_obj_value}  ---> {tsp_d_opt / tsp_dist} ")
         self.curr_obj_value = tsp_d_opt / tsp_dist
         self.curr_path_dist = tsp_dist
         self.curr_d_opt = tsp_d_opt
         return
 
     def modify_existing_tsp_path(self, curr_robot_idx: int, covered_vertices: set):
-        """ Replanning after closing a loop. 
+        """ Replanning after closing a loop.
             Attention: the modified path must keep curr_robot_idx in its place.
-            args: 
+            args:
                 covered_vertices: the vertices that have been percepted and have no frontiers
         """
         visited_nodes_on_path = set(self.curr_path[:curr_robot_idx])
@@ -429,14 +449,14 @@ class PathPlanner:
         # TSP planning
         D_submap = get_distance_matrix_for_submap_tsp(self.prior_graph, unvisited_node_list)
         # Set index of robot position, is always 0 because of the structure of unvisited_node_list
-        start_index = unvisited_node_list.index(self.curr_path[curr_robot_idx]) 
+        start_index = unvisited_node_list.index(self.curr_path[curr_robot_idx])
 
-        rospy.loginfo("Unvisited node list: " + str(unvisited_node_list))
+        self.get_logger().info("Unvisited node list: " + str(unvisited_node_list))
 
         if self.tsp_solver_name == "tsp-solver":
             idx_path_sub = solve_tsp(D_submap, endpoints = (start_index, None))  # Given start and end points
             print("Replanning on submap solved by tsp-solver.")
-            submap_tsp_path = [unvisited_node_list[i] for i in idx_path_sub]  
+            submap_tsp_path = [unvisited_node_list[i] for i in idx_path_sub]
         else: # Concorde Method
             # First construct node_list for concorde. The first node should be starring node.
             concorde_node_list = [unvisited_node_list[start_index]]   # Indicate start_idx for concorde tsp solver
@@ -463,7 +483,7 @@ class PathPlanner:
             really_visit_vertices.pop()
         # Check vertices in visited_vertices_list are fully connected over prior_graph or not. Should be fully connected.
         prefix_path = connect_tsp_path(self.prior_graph, really_visit_vertices)
-        path_to_evaluate = prefix_path + full_submap_tsp_path  
+        path_to_evaluate = prefix_path + full_submap_tsp_path
         # path_length = get_path_length(self.prior_graph, path_to_evaluate, weight="weight")
         try:
             # curr_real_path = prefix_path + self.curr_path[curr_robot_idx:]
@@ -480,7 +500,7 @@ class PathPlanner:
                     continue
                 if (self.curr_path[prev_idx], self.curr_path[after_idx]) not in self.prior_graph.edges():
                     curr_path_to_follow.append(self.curr_path[kk])
-                
+
             curr_real_path = prefix_path + curr_path_to_follow
             self.update_curr_obj_value(curr_real_path)
         except Exception as e:
@@ -489,21 +509,21 @@ class PathPlanner:
         # Actually self.curr_obj_value is not used in the iterations
         results2 = offline_iterative_evaluate_tsp_path(self.prior_graph, path_to_evaluate, len(prefix_path), self.curr_obj_value)
         is_optimized2, new_path2, loop_vertices2, curr_obj_value2, curr_d_opt2, curr_path_dist2, tsp_d_opt2, tsp_dist2 = results2
-        
+
         print("            previous   vs  modifed         ")
         print(f"Obj-value: {self.curr_obj_value}  vs  {curr_obj_value2}")
         print(f"D-opt:     {self.curr_d_opt}  vs  {curr_d_opt2}")
         print(f"Distance:  {self.curr_path_dist}  vs  {curr_path_dist2}")
-        
+
         if is_optimized2:
             modified_new_tsp_path_str = ' '.join(str(item) for item in new_path2[len(prefix_path):])
             print("Modified Following Path: " + modified_new_tsp_path_str)
 
-        if curr_obj_value2 < self.curr_obj_value: 
-            rospy.loginfo("New path gets smaller objective value, Current tsp path remains.")
-            return 
+        if curr_obj_value2 < self.curr_obj_value:
+            self.get_logger().info("New path gets smaller objective value, Current tsp path remains.")
+            return
 
-        rospy.loginfo("Path planner finds better tsp path.")
+        self.get_logger().info("Path planner finds better tsp path.")
 
         self.curr_obj_value = curr_obj_value2
         self.curr_path_dist = curr_path_dist2
@@ -515,12 +535,10 @@ class PathPlanner:
         self.curr_path = send_path
         self.is_loop = self.is_loop[:curr_robot_idx] + true_loop[len(prefix_path):]
         self.is_loop[curr_robot_idx] = True
-        return 
+        return
 
-    
-    def handle_prior_graph(self, request: RequestGraphRequest) -> RequestGraphResponse:
+    def handle_prior_graph(self, request, response):
         """ Server for prior graph request. """
-        response = RequestGraphResponse()
         vertices = list(self.prior_graph.nodes())
         x_coords, y_coords = [], []
         edges_start, edges_end = [], []
@@ -531,25 +549,23 @@ class PathPlanner:
             edges_start.append(u)
             edges_end.append(v)
 
-        response.vertices = vertices
         response.x_coords = x_coords
         response.y_coords = y_coords
         response.edges_start = edges_start
         response.edges_end = edges_end
         return response
-    
+
     def update_pub_pose_idx(self):
         """ Publish current received pose graph index. """
-        msg = Int32MultiArray()
-        msg.data = [self.curr_pg_vertex_idx, self.curr_pg_edge_idx]
+        msg = Float64MultiArray()
+        msg.data = [float(self.curr_pg_vertex_idx), float(self.curr_pg_edge_idx)]
         self.pub_pose_idx.publish(msg)
-        # rospy.loginfo("Update pose graph publish index.")
+        # self.get_logger().info("Update pose graph publish index.")
 
     def write_posegraph_to_g2o(self):
         write_nx_graph_to_g2o(self.pose_graph, self.g2o_save_path)
         return
 
-    
     def handle_pose_graph(self, msg: PoseGraph):
         """ 1. Receive and update new pose graph to pose_graph
             2. Update really visited_vertices, becuase some vertices in tsp_path will be skipped
@@ -559,7 +575,7 @@ class PathPlanner:
 
         if msg.vertex_start_idx != self.curr_pg_vertex_idx or \
                             msg.edge_start_idx != self.curr_pg_edge_idx:
-            rospy.logerr("pose graph update starting index does not match.")
+            self.get_logger().error("pose graph update starting index does not match.")
             return
         self.curr_pg_vertex_idx += len(msg.vertices)
         self.curr_pg_edge_idx += len(msg.edges_start)
@@ -600,23 +616,23 @@ class PathPlanner:
         visited_str = ""
         for v in self.visited_vertices:
             visited_str += str(v) + " "
-        rospy.loginfo("Really visited vertices: " + visited_str)
+        self.get_logger().info("Really visited vertices: " + visited_str)
 
         for i in range(len(msg.edges_start)):
             v_start, v_end = msg.edges_start[i], msg.edges_end[i]
             covariance_str = msg.covariance[i]
             cov_split = covariance_str.split(" ")
-            covariance = np.array([[float(cov_split[0]), float(cov_split[1]), float(cov_split[2])], 
-                                   [float(cov_split[1]), float(cov_split[3]), float(cov_split[4])], 
-                                   [float(cov_split[2]), float(cov_split[4]), float(cov_split[5])]])   
+            covariance = np.array([[float(cov_split[0]), float(cov_split[1]), float(cov_split[2])],
+                                   [float(cov_split[1]), float(cov_split[3]), float(cov_split[4])],
+                                   [float(cov_split[2]), float(cov_split[4]), float(cov_split[5])]])
             self.pose_graph.add_edge(v_start, v_end, covariance=covariance)
-    
-        rospy.logdebug("pose graph update: %d vertices, %d edges", self.pose_graph.number_of_nodes(), 
+
+        self.get_logger().debug("pose graph update: %d vertices, %d edges", self.pose_graph.number_of_nodes(),
                                                                   self.pose_graph.number_of_edges())
         self.write_posegraph_to_g2o()
         # self.update_prior_graph()
         return
-    
+
     def update_prior_graph(self):
         """ Add edges into prior graph according to really visited vertices """
         for i in range(len(self.visited_vertices) - 1):
@@ -629,15 +645,14 @@ class PathPlanner:
                 information = self.prior_graph.edges()[(vertex1, neighbors[0])]["information"]
                 d_opt = self.prior_graph.edges()[(vertex1, neighbors[0])]["d_opt"]
                 self.prior_graph.add_edge(vertex1, vertex2, weight=weight, information=information, d_opt=d_opt)
-                rospy.loginfo(f"New edge added into prior_map from {vertex1} to {vertex2}")
+                self.get_logger().info(f"New edge added into prior_map from {vertex1} to {vertex2}")
         return
 
-    def handle_reliable_loop(self, request: ReliableLoopRequest) -> ReliableLoopResponse:
+    def handle_reliable_loop(self, request, response):
         map_vertex = request.goal_vertex
-        response = ReliableLoopResponse()
         # Find a list of poses around map_vertex, and send back to the client
         if map_vertex not in self.prior_graph.nodes():
-            rospy.logerr("Vertex requesting reliable loop is not in prior_graph!")
+            self.get_logger().error("Vertex requesting reliable loop is not in prior_graph!")
             return response
         vertex_x, vertex_y = self.prior_graph.nodes()[map_vertex]["position"]
         min_dist = float("inf")
@@ -666,13 +681,16 @@ class PathPlanner:
             if msg.distance < shortest_distance:
                 self.prior_graph.add_edge(msg.vertex1, msg.vertex2, weight=msg.distance)
         except nx.NetworkXNoPath:
-            print("No path exists between the source and target nodes.")
-        # rospy.loginfo(f"Add edge: ({msg.vertex1}, {msg.vertex2}), distance: {msg.distance}")
+            self.get_logger().info("No path exists between the source and target nodes.")
+        # self.get_logger().info(f"Add edge: ({msg.vertex1}, {msg.vertex2}), distance: {msg.distance}")
         return
 
-if __name__ == "__main__":
-    path_planner = PathPlanner()
-    while not rospy.is_shutdown():
-        rospy.spin()
-    rospy.loginfo(f"Pose graph has: {path_planner.curr_pg_vertex_idx} vertices, {path_planner.curr_pg_edge_idx} edges.")
+def main(args=None):
+    rclpy.init(args=args)
+    path_planner = PathPlannerNode()
+    rclpy.spin(path_planner)
+    path_planner.destroy_node()
+    rclpy.shutdown()
 
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,23 @@
+
+# ROS 2 parameter file for cpp_solver
+/**:
+  ros__parameters:
+    # TF frames
+    laser_frame: "base_laser_link"
+    robot_frame: "base_link"
+    odometry_frame: "odom"
+    offset_frame: "offset"
+    map_frame: "map"
+    
+    # ROS topics
+    map_topic: "/map"
+    laser_topic: "/base_scan"
+    
+    # Exploration parameters
+    strategy: "MyPlanner"
+    map_name: "map3/map3"
+    robot_start_position: "0.0 0.0 0.0"
+    
+    # Other parameters
+    visualize_frontiers: true
+    only_use_tsp: false

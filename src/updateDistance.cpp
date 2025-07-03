@@ -1,10 +1,13 @@
-#include <ros/ros.h>
-#include <nav_msgs/OccupancyGrid.h>
-#include <geometry_msgs/Pose.h>
-
-#include <iostream>
+#include <rclcpp/rclcpp.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
+#include <cpp_solver/msg/edge_distance.hpp>
+#include <memory>
+#include <vector>
+#include <string>
 #include <sstream>
-
+#include <iostream>
+#include <map>
+#include <set>
 
 #include "cpp_solver/RequestGraph.h"
 #include "cpp_solver/EdgeDistance.h"
@@ -20,19 +23,17 @@ std::vector<std::pair<int, int>> dir;
 std::set<std::pair<int, int>> updated_edges;
 
 std::vector<double> robotInitPosition;
+rclcpp::Publisher<cpp_solver::msg::EdgeDistance>::SharedPtr pubDistance;
+std::shared_ptr<rclcpp::Node> node;
 
-// Publisher for distance update
-ros::Publisher pubDistance;
-
-
-void occupancyGridCallback(const nav_msgs::OccupancyGrid::ConstPtr& msg) {
-    ROS_INFO("Received an OccupancyGrid message!");
-    ROS_INFO("Width: %d, Height: %d, Size: %d", msg->info.width, msg->info.height, msg->data.size());
-    geometry_msgs::Pose originPoint = msg->info.origin;
-    ROS_INFO("Map origin x: %.3f, y: %.3f", originPoint.position.x, originPoint.position.y);
+void occupancyGridCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
+    RCLCPP_INFO(node->get_logger(), "Received an OccupancyGrid message!");
+    RCLCPP_INFO(node->get_logger(), "Width: %d, Height: %d, Size: %d", msg->info.width, msg->info.height, msg->data.size());
+    geometry_msgs::msg::Pose originPoint = msg->info.origin;
+    RCLCPP_INFO(node->get_logger(), "Map origin x: %.3f, y: %.3f", originPoint.position.x, originPoint.position.y);
     
     if(!getPriorMap){
-        ROS_WARN("Do not get prior map yet.");
+        RCLCPP_WARN(node->get_logger(), "Do not get prior map yet.");
         return;
     }
     // A* path finder
@@ -75,16 +76,16 @@ void occupancyGridCallback(const nav_msgs::OccupancyGrid::ConstPtr& msg) {
                 count_free_neighbor++;
             }
             // if(v == 8)
-            //     ROS_WARN("cell value: %d", map_arr[neighbor_index]);
+            //     RCLCPP_WARN("cell value: %d", map_arr[neighbor_index]);
         }
         if(count_free_neighbor == 8){
             free_vertices.push_back(v);
             free_vertices_index.push_back(std::make_pair(v_map_x, v_map_y));
         }
         // if(v == 8)
-        //     ROS_WARN("free cell number: %d", count_free_neighbor);
+        //     RCLCPP_WARN("free cell number: %d", count_free_neighbor);
     }
-    ROS_INFO("Free vertices size: %d", free_vertices.size());
+    RCLCPP_INFO(node->get_logger(), "Free vertices size: %d", free_vertices.size());
 
     if(free_vertices.size() > 1){
         // Update edge weight and publish
@@ -116,25 +117,22 @@ void occupancyGridCallback(const nav_msgs::OccupancyGrid::ConstPtr& msg) {
                     prev_y = point.y;
                 }
                 // FIXME: astarDist should be less than distance on the prior map
-                cpp_solver::EdgeDistance edge_distance;
+                cpp_solver::msg::EdgeDistance edge_distance;
                 edge_distance.vertex1 = free_vertices[k];
                 edge_distance.vertex2 = free_vertices[p];
                 edge_distance.distance = astarDist;
-                pubDistance.publish(edge_distance);
+                pubDistance->publish(edge_distance);
                 updated_edges.insert(candidate);           
             }
         }
     }
-    ROS_INFO("%d edge distance updated", updated_edges.size());
+    RCLCPP_INFO(node->get_logger(), "%d edge distance updated", updated_edges.size());
     return;
-
 }
 
-
-
 int main(int argc, char** argv) {
-    ros::init(argc, argv, "update_distance");
-    ros::NodeHandle nh;
+    rclcpp::init(argc, argv);
+    node = rclcpp::Node::make_shared("updateDistance");
 
     dir.push_back(std::make_pair(0, 1));
     dir.push_back(std::make_pair(0, -1));
@@ -145,50 +143,60 @@ int main(int argc, char** argv) {
     dir.push_back(std::make_pair(-1, 1));
     dir.push_back(std::make_pair(-1, -1));
 
-    // Prior graph request test
     getPriorMap = false;
-	ROS_INFO("Waiting for prior_graph_service ...");
-	bool priorGraphServiceAvailable = ros::service::waitForService("prior_graph_service", ros::Duration(30.0));
-    if (!priorGraphServiceAvailable)
-    {
-        ROS_ERROR("prior_graph_service not available.");
-    }
-	else{
-		ros::ServiceClient clientPriorGraph = nh.serviceClient<cpp_solver::RequestGraph>("prior_graph_service");
-		cpp_solver::RequestGraph clientMessage2;
-		if (clientPriorGraph.call(clientMessage2))
-		{	
-			cpp_solver::RequestGraph::Response res2 = clientMessage2.response;
-			vertices = res2.vertices;
-			std::vector<float> x_coords = res2.x_coords;
-			std::vector<float> y_coords = res2.y_coords;
-			std::vector<int32_t> edges_start = res2.edges_start;
-			std::vector<int32_t> edges_end = res2.edges_end;
-			ROS_INFO("Receive response of service prior_graph_service.");
-            ROS_INFO("Prior map has %d vertices, %d edges", vertices.size(), edges_start.size());
-            for(int i = 0; i < vertices.size(); i++){
-                verticesPosition[vertices[i]] = std::make_pair(x_coords[i], y_coords[i]);
-            }
-            for(int i = 0; i < edges_start.size(); i++){
-                edgeSet.insert(std::make_pair(edges_start[i], edges_end[i]));
-            }
-            getPriorMap = true;
-		}
-		else
-		{
-			std::cout << "Failed to call service: prior_graph_service" << std::endl;
-		}
-	}
+	RCLCPP_INFO(node->get_logger(), "Waiting for prior_graph_service ...");
+
+    //auto clientPriorGraph = node->create_client<cpp_solver::srv::RequestGraph>("prior_graph_service");
+
+	// Waiting for service is not implemented yet
+	//bool priorGraphServiceAvailable = rclcpp::service::waitForService("prior_graph_service", rclcpp::Duration(30.0));
+    //if (!priorGraphServiceAvailable)
+    //{
+    //    RCLCPP_ERROR(node->get_logger(), "prior_graph_service not available.");
+    //}
+	//else{
+		//rclcpp::Client<cpp_solver::srv::RequestGraph>::SharedPtr clientPriorGraph = node->create_client<cpp_solver::srv::RequestGraph>("prior_graph_service");
+		//auto request = std::make_shared<cpp_solver::srv::RequestGraph::Request>();
+		//auto result = clientPriorGraph->async_send_request(request);
+		//if (rclcpp::spin_until_complete(node,
+        //                      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::seconds(30))) ==
+        //rclcpp::FutureReturnCode::TIMEOUT)
+        //{
+        //    RCLCPP_ERROR(node->get_logger(), "prior_graph_service not available.");
+		//}
+		//else
+		//{	
+		//	//cpp_solver::RequestGraph::Response res2 = clientMessage2.response;
+		//	vertices = result.get()->response.vertices;
+		//	std::vector<float> x_coords = result.get()->response.x_coords;
+		//	std::vector<float> y_coords = result.get()->response.y_coords;
+		//	std::vector<int32_t> edges_start = result.get()->response.edges_start;
+		//	std::vector<int32_t> edges_end = result.get()->response.edges_end;
+		//	RCLCPP_INFO(node->get_logger(), "Receive response of service prior_graph_service.");
+        //    RCLCPP_INFO(node->get_logger(), "Prior map has %d vertices, %d edges", vertices.size(), edges_start.size());
+        //    for(int i = 0; i < vertices.size(); i++){
+        //        verticesPosition[vertices[i]] = std::make_pair(x_coords[i], y_coords[i]);
+        //    }
+        //    for(int i = 0; i < edges_start.size(); i++){
+        //        edgeSet.insert(std::make_pair(edges_start[i], edges_end[i]));
+        //    }
+        //    getPriorMap = true;
+		//}
+		//else
+		//{
+		//	RCLCPP_ERROR(node->get_logger(), "Failed to call service: prior_graph_service");
+		//}
+	//}
 
     // Read the robot_init_position parameter as a string from the parameter server
     std::string robotInitPositionStr;
-    if (!nh.getParam("robot_start_position", robotInitPositionStr)) {
-        ROS_ERROR("Failed to read robot_init_position parameter.");
+    node->declare_parameter("robot_start_position", std::string("0.0 0.0 0.0"));
+    if (!node->get_parameter("robot_start_position", robotInitPositionStr)) {
+        RCLCPP_ERROR(node->get_logger(), "Failed to read robot_init_position parameter.");
         return 1;
     }
 
     // Parse the string to get three double values
-    
     std::istringstream iss(robotInitPositionStr);
     double value;
     while (iss >> value) {
@@ -198,22 +206,22 @@ int main(int argc, char** argv) {
             break;
         }
     }
+
     // Check if there are exactly three values in the string
     if (robotInitPosition.size() != 3) {
-        ROS_ERROR("Invalid robot_init_position parameter format. Expected three double values separated by spaces.");
+        RCLCPP_ERROR(node->get_logger(), "Invalid robot_init_position parameter format. Expected three double values separated by spaces.");
         return 1;
     }
-    ROS_INFO("Get robot position: %.2f, %.2f", robotInitPosition[0], robotInitPosition[1]);
+    RCLCPP_INFO(node->get_logger(), "Get robot position: %.2f, %.2f", robotInitPosition[0], robotInitPosition[1]);
 
+    // Create subscriber and publisher
+    auto sub = node->create_subscription<nav_msgs::msg::OccupancyGrid>(
+        "/map", rclcpp::QoS(1), occupancyGridCallback);
 
-    // buffer is 0. If new topic comes when running callback, the topic will be discarded.
-    ros::Subscriber sub = nh.subscribe("/map", 0, occupancyGridCallback);
+    pubDistance = node->create_publisher<cpp_solver::msg::EdgeDistance>("/edge_distance", 10);
 
-    pubDistance = nh.advertise<cpp_solver::EdgeDistance>("/edge_distance", 10, true);
-
-    ros::spin();
+    rclcpp::spin(node);
+    rclcpp::shutdown();
 
     return 0;
 }
-
-
