@@ -1,0 +1,7 @@
+[console_scripts]
+exploration_button_client = cpp_solver.exploration_button_client:main
+exploration_button_server = cpp_solver.exploration_button_server:main
+my_planner = cpp_solver.my_planner:main
+path_planner = cpp_solver.path_planner:main
+update_distance = cpp_solver.update_distance:main
+
