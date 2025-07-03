@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 import os
 from glob import glob
 
@@ -7,7 +7,7 @@ package_name = 'cpp_solver'
 setup(
     name=package_name,
     version='0.0.1',
-    packages=[package_name],
+    packages=find_packages(),  # ✅ Automatically finds 'cpp_solver' folder
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
@@ -26,26 +26,14 @@ setup(
     maintainer_email='alberto.soragna@gmail.com',
     description='Graph-Based SLAM-Aware Exploration package',
     license='MIT',
-    tests_require=['pytest'],
-    py_modules=[
-        'cpp_solver.path_planner',
-        'cpp_solver.exploration_button_server',
-        'cpp_solver.exploration_button_client',
-        'cpp_solver.tsp',
-        'cpp_solver.utils',
-        'cpp_solver.offline_tsp_evaluation',
-        'cpp_solver.read_drawio_to_nx',
-        'cpp_solver.my_planner',
-        'cpp_solver.update_distance',
-        'cpp_solver.graph_handler',
-    ],
     entry_points={
         'console_scripts': [
-            'path_planner.py = cpp_solver.path_planner:main',
-            'exploration_button_server.py = cpp_solver.exploration_button_server:main',
-            'exploration_button_client.py = cpp_solver.exploration_button_client:main',
-            'my_planner.py = cpp_solver.my_planner:main',
-            'update_distance.py = cpp_solver.update_distance:main',
+            'path_planner = cpp_solver.path_planner:main',
+            'exploration_button_server = cpp_solver.exploration_button_server:main',
+            'exploration_button_client = cpp_solver.exploration_button_client:main',
+            'my_planner = cpp_solver.my_planner:main',
+            'update_distance = cpp_solver.update_distance:main',
         ],
     },
 )
+

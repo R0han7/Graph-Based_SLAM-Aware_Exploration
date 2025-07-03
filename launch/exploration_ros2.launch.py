@@ -1,15 +1,11 @@
-
 #!/usr/bin/env python3
 
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition
-from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     # Get the launch directory
@@ -37,7 +33,7 @@ def generate_launch_description():
     # Launch the path planner node
     path_planner_node = Node(
         package='cpp_solver',
-        executable='path_planner.py',
+        executable='path_planner',  # <-- No .py extension
         name='path_planner',
         output='screen',
         parameters=[{
@@ -50,7 +46,7 @@ def generate_launch_description():
     # Launch the exploration button server
     button_server_node = Node(
         package='cpp_solver',
-        executable='exploration_button_server.py',
+        executable='exploration_button_server',  # <-- No .py extension
         name='exploration_button_server',
         output='screen'
     )
@@ -58,7 +54,7 @@ def generate_launch_description():
     # Launch the updateDistance node
     update_distance_node = Node(
         package='cpp_solver',
-        executable='update_distance.py',
+        executable='update_distance',  # <-- No .py extension
         name='updateDistance',
         output='screen',
         parameters=[{
@@ -74,3 +70,4 @@ def generate_launch_description():
         button_server_node,
         update_distance_node,
     ])
+
