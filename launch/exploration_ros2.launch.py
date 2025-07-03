@@ -58,7 +58,7 @@ def generate_launch_description():
     # Launch the updateDistance node
     update_distance_node = Node(
         package='cpp_solver',
-        executable='updateDistance',
+        executable='update_distance.py',
         name='updateDistance',
         output='screen',
         parameters=[{

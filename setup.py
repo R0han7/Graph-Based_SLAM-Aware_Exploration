@@ -1,4 +1,3 @@
-
 from setuptools import setup
 import os
 from glob import glob
@@ -28,12 +27,25 @@ setup(
     description='Graph-Based SLAM-Aware Exploration package',
     license='MIT',
     tests_require=['pytest'],
+    py_modules=[
+        'cpp_solver.path_planner',
+        'cpp_solver.exploration_button_server',
+        'cpp_solver.exploration_button_client',
+        'cpp_solver.tsp',
+        'cpp_solver.utils',
+        'cpp_solver.offline_tsp_evaluation',
+        'cpp_solver.read_drawio_to_nx',
+        'cpp_solver.my_planner',
+        'cpp_solver.update_distance',
+        'cpp_solver.graph_handler',
+    ],
     entry_points={
         'console_scripts': [
-            'path_planner = cpp_solver.path_planner:main',
-            'exploration_button_server = cpp_solver.exploration_button_server:main',
-            'exploration_button_client = cpp_solver.exploration_button_client:main',
-            'tsp = cpp_solver.tsp:main',
+            'path_planner.py = cpp_solver.path_planner:main',
+            'exploration_button_server.py = cpp_solver.exploration_button_server:main',
+            'exploration_button_client.py = cpp_solver.exploration_button_client:main',
+            'my_planner.py = cpp_solver.my_planner:main',
+            'update_distance.py = cpp_solver.update_distance:main',
         ],
     },
 )

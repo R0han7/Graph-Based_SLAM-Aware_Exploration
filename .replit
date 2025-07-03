@@ -30,12 +30,36 @@ mode = "sequential"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "source /opt/ros/humble/setup.bash"
+args = "python3 -m pip install --upgrade pip"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "colcon build --packages-select cpp_solver"
+args = "python3 -m pip install setuptools wheel"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python3 -m pip install rclpy"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python3 -m pip install numpy"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python3 -m pip install networkx"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python3 -m pip install tsp-solver"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "colcon build --packages-select cpp_solver --symlink-install"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "source install/setup.bash"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "echo \"ROS2 Python package built successfully!\""
