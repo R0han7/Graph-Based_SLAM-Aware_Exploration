@@ -2,3 +2,23 @@ modules = ["python-3.12", "cpp-clang14"]
 
 [nix]
 channel = "stable-24_05"
+
+[workflows]
+runButton = "Build ROS2 Package"
+
+[[workflows.workflow]]
+name = "Build ROS2 Package"
+author = 39837216
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "source /opt/ros/humble/setup.bash"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "colcon build --packages-select cpp_solver"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "source install/setup.bash"
